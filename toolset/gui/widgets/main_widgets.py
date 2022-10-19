@@ -1,8 +1,9 @@
 import multiprocessing
+import time
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from time import sleep
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from PyQt5 import QtCore
 from PyQt5.QtCore import QSortFilterProxyModel, QModelIndex, QPoint, QThread, QTimer
@@ -241,6 +242,7 @@ class TextureList(MainWindowList):
         self.setupSignals()
 
         self._installation: Optional[HTInstallation] = None
+        self._scannedTextures: Set[str] = set()
 
         self.texturesModel = QStandardItemModel()
         self.texturesProxyModel = QSortFilterProxyModel()
@@ -308,9 +310,8 @@ class TextureList(MainWindowList):
         if self.texturesModel.rowCount() == 0:
             return []
 
-        scanWidth = self.ui.resourceList.viewport().width()
-        scanHeight = self.ui.resourceList.viewport().height()
-        print(scanWidth, scanHeight)
+        scanWidth = self.parent().width()
+        scanHeight = self.parent().height()
 
         proxyModel = self.texturesProxyModel
         model = self.texturesModel
@@ -340,7 +341,8 @@ class TextureList(MainWindowList):
                 proxyIndex = proxyModel.index(firstIndex.row() + i, 0)
                 sourceIndex = proxyModel.mapToSource(proxyIndex)
                 item = model.itemFromIndex(sourceIndex)
-                items.append(item)
+                if item is not None:
+                    items.append(item)
 
         return items
 
@@ -356,7 +358,7 @@ class TextureList(MainWindowList):
             sleep(0.1)
 
     def onFilterStringUpdated(self) -> None:
-        self.texturesProxyModel.setFilterFixedString(self.ui.searchEdit.text())
+        self.texturesProxyModel.setFilterFixedString(self.ui.searchEdit.text().lower())
 
     def onSectionChanged(self) -> None:
         self.sectionChanged.emit(self.ui.sectionCombo.currentData(QtCore.Qt.UserRole))
@@ -368,9 +370,19 @@ class TextureList(MainWindowList):
         self.requestRefresh.emit()
 
     def onTextureListScrolled(self) -> None:
-        for item in self.visibleItems():
-            tpc = self._installation.texture(item.text(), [SearchLocation.TEXTURES_GUI, SearchLocation.TEXTURES_TPA])
-            tpc = TPC() if tpc is None else tpc
+        # Note: Avoid redundantly loading textures that have already been loaded
+        textures = self._installation.textures(
+            [item.text() for item in self.visibleItems() if item.text() not in self._scannedTextures],
+            [SearchLocation.TEXTURES_GUI, SearchLocation.TEXTURES_TPA]
+        )
+
+        # Emit signals to load textures that have not had their icons assigned
+        for item in [item for item in self.visibleItems() if item.text() not in self._scannedTextures]:
+            # Avoid trying to load the same texture multiple times.
+            self._scannedTextures.add(item.text())
+
+            hasTPC = item.text() in textures and textures[item.text()] is not None
+            tpc = textures[item.text()] if hasTPC else TPC()
 
             task = TextureListTask(item.row(), tpc, item.text())
             self._taskQueue.put(task)
